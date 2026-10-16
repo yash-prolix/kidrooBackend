@@ -29,12 +29,13 @@ const seedData = async () => {
     const woodenBlockProduct = await Product.create({
       productName: "Classic Wooden Block Set",
       slug: "classic-wooden-block-set",
+      productCode: "WBS-101",
       description: "A 50-piece set of high-quality wooden blocks helping toddlers develop motor skills.",
       price: 29.99,
       originalPrice: 34.99,
       discountPercentage: 14,
       stock: 0, // Handled by variants
-      category: defaultCategory,
+      categories: [defaultCategory],
       image: "https://res.cloudinary.com/demo/image/upload/v1612456789/wooden_blocks.jpg",
       images: ["https://res.cloudinary.com/demo/image/upload/v1612456789/wooden_blocks.jpg"],
       ratings: 4.8,
@@ -42,10 +43,15 @@ const seedData = async () => {
       featured: true,
       newArrival: false,
       bestSeller: true,
-      ageRange: { from: 2, to: 5 },
+      ageRange: ["2-4"],
       tags: ["wooden", "blocks", "toddler", "educational"],
       isActive: true,
-      hasVariants: true
+      hasVariants: true,
+      weight: 1.2,
+      length: 20,
+      breadth: 20,
+      width: 20,
+      height: 15
     });
 
     const woodenBlockVariants = await ProductVariant.insertMany([
@@ -88,12 +94,13 @@ const seedData = async () => {
     const rcCarProduct = await Product.create({
       productName: "High Speed RC Car",
       slug: "high-speed-rc-car",
+      productCode: "RCC-102",
       description: "Fast remote control car with off-road capabilities and rechargeable battery.",
       price: 49.99,
       originalPrice: 69.99,
       discountPercentage: 28,
       stock: 0, 
-      category: defaultCategory,
+      categories: [defaultCategory],
       image: "https://res.cloudinary.com/demo/image/upload/v1612456791/rc_car.jpg",
       images: ["https://res.cloudinary.com/demo/image/upload/v1612456791/rc_car.jpg"],
       ratings: 4.5,
@@ -101,10 +108,15 @@ const seedData = async () => {
       featured: true,
       newArrival: true,
       bestSeller: false,
-      ageRange: { from: 8, to: 14 },
+      ageRange: ["8+"],
       tags: ["rc", "car", "remote control", "outdoor"],
       isActive: true,
-      hasVariants: true
+      hasVariants: true,
+      weight: 0.8,
+      length: 30,
+      breadth: 15,
+      width: 15,
+      height: 12
     });
 
     const rcCarVariants = await ProductVariant.insertMany([

@@ -6,14 +6,18 @@ export const redis = new Redis(redisURL, {
   lazyConnect: true,
   maxRetriesPerRequest: 3,
   retryStrategy(times) {
-    // Exponential backoff with max 30s
-    const delay = Math.min(times * 200, 30000);
-    return delay;
+    if (times > 3) {
+      return null; // Stop retrying after 3 attempts to avoid console log spam
+    }
+    return Math.min(times * 200, 2000);
   },
 });
 
 redis.on("error", (err) => {
-  console.error("Redis error:", err.message);
+  // Only log if redis is not in a stopped retry state
+  if (redis.status !== "end") {
+    console.error("Redis error:", err.message);
+  }
 });
 
 redis.on("end", () => {

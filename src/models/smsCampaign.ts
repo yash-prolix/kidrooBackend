@@ -1,11 +1,13 @@
 import mongoose, { Schema, Document } from "mongoose";
 
 // ── Campaign recipient result sub-doc ──────────────────────────
-interface ICampaignRecipient {
-  customerId: mongoose.Types.ObjectId;
+export interface ICampaignRecipient {
+  customerId?: mongoose.Types.ObjectId;
   mobile: string;
   name: string;
-  status: "sent" | "delivered" | "failed";
+  status: "draft" | "sent" | "delivered" | "failed";
+  errorReason?: string;
+  deliveredAt?: Date;
 }
 
 // ── Main interface ──────────────────────────────────────────────
@@ -16,7 +18,9 @@ export interface ISmsCampaign extends Document {
   targetGroup: "all" | "repeat" | "high_value" | "new" | "at_risk" | "custom";
   targetLabel: string;
   targetIds: mongoose.Types.ObjectId[];
+  recipients: ICampaignRecipient[];
   status: "draft" | "sent" | "scheduled";
+  templateKey?: string;
   sentCount: number;
   deliveredCount: number;
   failedCount: number;
@@ -31,6 +35,7 @@ const smsCampaignSchema = new Schema<ISmsCampaign>(
     name: { type: String, required: true, trim: true },
     message: { type: String, required: true, trim: true, maxlength: 1024 },
     channel: { type: String, enum: ["whatsapp"], default: "whatsapp" },
+    templateKey: { type: String, default: "promoBlast" },
     targetGroup: {
       type: String,
       enum: ["all", "repeat", "high_value", "new", "at_risk", "custom"],
@@ -38,6 +43,20 @@ const smsCampaignSchema = new Schema<ISmsCampaign>(
     },
     targetLabel: { type: String, default: "All Customers" },
     targetIds: [{ type: Schema.Types.ObjectId, ref: "Customer" }],
+    recipients: [
+      {
+        customerId: { type: Schema.Types.ObjectId, ref: "Customer" },
+        mobile: { type: String, required: true },
+        name: { type: String, default: "Customer" },
+        status: {
+          type: String,
+          enum: ["draft", "sent", "delivered", "failed"],
+          default: "draft",
+        },
+        errorReason: { type: String, default: "" },
+        deliveredAt: { type: Date },
+      },
+    ],
     status: {
       type: String,
       enum: ["draft", "sent", "scheduled"],

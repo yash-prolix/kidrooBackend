@@ -154,10 +154,6 @@ customerSchema.methods.toJSON = function () {
   return obj;
 };
 
-// ── Indexes ─────────────────────────────────────────────────────
-customerSchema.index({ mobile: 1 });
-customerSchema.index({ email: 1 });
-
 const Customer = mongoose.model<ICustomer>("Customer", customerSchema);
 
 export default Customer;

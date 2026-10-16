@@ -34,7 +34,6 @@ const couponSchema = new mongoose.Schema<ICoupon>(
       unique: true,
       uppercase: true,
       trim: true,
-      index: true,
     },
     description: {
       type: String,
@@ -117,7 +116,6 @@ const couponSchema = new mongoose.Schema<ICoupon>(
 
 // Indexes
 couponSchema.index({ visibility: 1, isActive: 1, validTo: 1 });
-couponSchema.index({ code: 1 });
 
 const Coupon = mongoose.model<ICoupon>("Coupon", couponSchema);
 

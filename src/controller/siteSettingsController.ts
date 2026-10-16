@@ -25,7 +25,7 @@ export const getSettings = asyncHandler(async (req: Request, res: Response) => {
  */
 export const updateSettings = asyncHandler(async (req: Request, res: Response) => {
   const existingSettings = await siteSettingsService.getSettings();
-  let { siteName, tagline, contactEmail, contactPhone, themeColors, paymentMethods, razorpayKeyId, razorpayKeySecret, freeShippingThreshold, freeShippingEnabled } = req.body;
+  let { siteName, tagline, contactEmail, contactPhone, themeColors, paymentMethods, razorpayKeyId, razorpayKeySecret, freeShippingThreshold, freeShippingEnabled, whatsappConfig } = req.body;
 
   // Smartly handle themeColors: parse if string, and ensure it's an object
   let parsedThemeColors = themeColors;
@@ -57,6 +57,17 @@ export const updateSettings = asyncHandler(async (req: Request, res: Response) =
     parsedPaymentMethods = existingSettings.paymentMethods;
   }
 
+  // Handle whatsappConfig: parse if string
+  let parsedWhatsappConfig = whatsappConfig;
+  if (typeof whatsappConfig === "string") {
+    try {
+      parsedWhatsappConfig = JSON.parse(whatsappConfig);
+    } catch (e) {
+      console.warn("Failed to parse whatsappConfig JSON, using existing or defaults");
+      parsedWhatsappConfig = existingSettings.whatsappConfig;
+    }
+  }
+
   let logoUrl = existingSettings.logo;
   const file = req.file;
 
@@ -86,12 +97,12 @@ export const updateSettings = asyncHandler(async (req: Request, res: Response) =
   }
 
   // Build razorpay config update (only update fields that were provided)
-  const razorpayConfig: any = {};
+  const razorpayConfigObj: any = {};
   if (razorpayKeyId !== undefined) {
-    razorpayConfig.keyId = razorpayKeyId;
+    razorpayConfigObj.keyId = razorpayKeyId;
   }
   if (razorpayKeySecret !== undefined && razorpayKeySecret !== "") {
-    razorpayConfig.keySecret = razorpayKeySecret;
+    razorpayConfigObj.keySecret = razorpayKeySecret;
   }
 
   const updateData: any = {
@@ -104,6 +115,13 @@ export const updateSettings = asyncHandler(async (req: Request, res: Response) =
     paymentMethods: parsedPaymentMethods,
   };
 
+  if (parsedWhatsappConfig && typeof parsedWhatsappConfig === "object") {
+    updateData.whatsappConfig = {
+      ...existingSettings.whatsappConfig,
+      ...parsedWhatsappConfig,
+    };
+  }
+
   if (freeShippingThreshold !== undefined) {
     updateData.freeShippingThreshold = Number(freeShippingThreshold);
   }
@@ -112,12 +130,12 @@ export const updateSettings = asyncHandler(async (req: Request, res: Response) =
   }
 
   // Only update razorpay config fields if provided
-  if (Object.keys(razorpayConfig).length > 0) {
-    if (razorpayConfig.keyId !== undefined) {
-      updateData["razorpayConfig.keyId"] = razorpayConfig.keyId;
+  if (Object.keys(razorpayConfigObj).length > 0) {
+    if (razorpayConfigObj.keyId !== undefined) {
+      updateData["razorpayConfig.keyId"] = razorpayConfigObj.keyId;
     }
-    if (razorpayConfig.keySecret !== undefined) {
-      updateData["razorpayConfig.keySecret"] = razorpayConfig.keySecret;
+    if (razorpayConfigObj.keySecret !== undefined) {
+      updateData["razorpayConfig.keySecret"] = razorpayConfigObj.keySecret;
     }
   }
 

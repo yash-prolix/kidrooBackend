@@ -5,6 +5,8 @@ import { CacheService } from "../services/redisCacheService";
 import { sendSuccessResponse } from "../utils/apiResponse";
 import { couponService } from "../services/couponService";
 import mongoose from "mongoose";
+import Customer from "../models/customer";
+import { sendWhatsAppBroadcast } from "../services/metaWhatsappService";
 
 /**
  * Get All Coupons (Admin)
@@ -82,6 +84,10 @@ export const createCoupon = asyncHandler(
       perUserLimit,
       isActive,
       visibility,
+      sendWhatsAppNotification,
+      targetGroup = "all",
+      targetIds = [],
+      customMessage,
     } = req.body;
 
     if (!code || !description || !discountType || discountValue === undefined) {
@@ -117,7 +123,30 @@ export const createCoupon = asyncHandler(
 
     await CacheService.del("coupons:public");
 
-    return sendSuccessResponse(res, 201, "Coupon created successfully", coupon);
+    // Optional: Send WhatsApp broadcast immediately upon coupon creation
+    let whatsappStats = null;
+    if (sendWhatsAppNotification === true || sendWhatsAppNotification === "true") {
+      try {
+        let query: any = { mobile: { $exists: true, $ne: "" }, isActive: true };
+        if (targetGroup === "custom" && Array.isArray(targetIds) && targetIds.length > 0) {
+          query._id = { $in: targetIds };
+        }
+        const customers = await Customer.find(query).select("firstName lastName mobile");
+        const recipients = customers.map((c) => ({
+          mobile: c.mobile,
+          name: `${c.firstName || "Valued"} ${c.lastName || "Customer"}`.trim(),
+        }));
+
+        const discountText = discountType === "percentage" ? `${discountValue}% OFF` : `₹${discountValue} OFF`;
+        const promoText = customMessage || `🎉 Special Offer! Use code *${coupon.code}* to get ${discountText}. ${description}`;
+
+        whatsappStats = await sendWhatsAppBroadcast(recipients, promoText);
+      } catch (err: any) {
+        console.error("[Coupon WhatsApp] Error sending broadcast on creation:", err?.message);
+      }
+    }
+
+    return sendSuccessResponse(res, 201, "Coupon created successfully", { coupon, whatsappStats });
   }
 );
 
@@ -218,5 +247,49 @@ export const validateCoupon = asyncHandler(
       result.message,
       result
     );
+  }
+);
+
+/**
+ * Send WhatsApp Offer Broadcast to All or Selected Customers (Admin)
+ * POST /api/coupons/:id/send-whatsapp
+ */
+export const sendOfferWhatsAppNotification = asyncHandler(
+  async (req: Request, res: Response) => {
+    const id = req.params.id as string;
+    const { targetGroup = "all", targetIds = [], customMessage } = req.body;
+
+    const coupon = await couponService.getCouponById(id);
+    if (!coupon) {
+      throw new AppError("Coupon not found", 404);
+    }
+
+    let query: any = { mobile: { $exists: true, $ne: "" }, isActive: true };
+    if (targetGroup === "custom" && Array.isArray(targetIds) && targetIds.length > 0) {
+      query._id = { $in: targetIds };
+    }
+
+    const customers = await Customer.find(query).select("firstName lastName mobile");
+    if (customers.length === 0) {
+      throw new AppError("No active customers with a mobile number found for the selected target group", 400);
+    }
+
+    const recipients = customers.map((c) => ({
+      mobile: c.mobile,
+      name: `${c.firstName || "Valued"} ${c.lastName || "Customer"}`.trim(),
+    }));
+
+    const discountText = coupon.discountType === "percentage" ? `${coupon.discountValue}% OFF` : `₹${coupon.discountValue} OFF`;
+    const promoText = customMessage || `🎉 Exclusive Offer! Use code *${coupon.code}* to get ${discountText}. ${coupon.description}`;
+
+    const { sent, failed } = await sendWhatsAppBroadcast(recipients, promoText);
+
+    return sendSuccessResponse(res, 200, `Offer WhatsApp notification broadcast completed`, {
+      couponCode: coupon.code,
+      totalRecipients: recipients.length,
+      sent,
+      failed,
+      targetGroup,
+    });
   }
 );

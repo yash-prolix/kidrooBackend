@@ -5,10 +5,8 @@ import SmsCampaign from "../models/smsCampaign";
 import { sendSuccessResponse } from "../utils/apiResponse";
 import { asyncHandler } from "../utils/asyncHandler";
 import AppError from "../utils/appError";
-import {
-  sendWhatsAppBroadcast,
-  BroadcastRecipient,
-} from "../services/msg91WhatsappService";
+import { sendWhatsAppBroadcast } from "../services/metaWhatsappService";
+import WhatsAppTemplate from "../models/whatsappTemplate";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -37,6 +35,8 @@ const GROUP_LABELS: Record<string, string> = {
   custom:     "Selected Customers",
 };
 
+type BroadcastRecipient = { mobile: string; name: string };
+
 // ─────────────────────────────────────────────────────────────────────────────
 // resolveTargetCustomers
 // Returns { _id, firstName, lastName, mobile } for the target group
@@ -52,9 +52,8 @@ async function resolveTargetCustomers(
       { firstName: 1, lastName: 1, mobile: 1 }
     ).lean();
     return docs.map((d: any) => ({
-      mobile:    d.mobile,
-      firstName: d.firstName,
-      lastName:  d.lastName,
+      mobile: d.mobile,
+      name: `${d.firstName || "Valued"} ${d.lastName || "Customer"}`.trim(),
     }));
   }
 
@@ -116,9 +115,8 @@ async function resolveTargetCustomers(
 
   const docs: any[] = await Customer.aggregate(pipeline);
   return docs.map((d) => ({
-    mobile:    d.mobile,
-    firstName: d.firstName,
-    lastName:  d.lastName,
+    mobile: d.mobile,
+    name: `${d.firstName || "Valued"} ${d.lastName || "Customer"}`.trim(),
   }));
 }
 
@@ -191,15 +189,30 @@ export const createAndSendCampaign = asyncHandler(async (req: Request, res: Resp
     targetGroup  = "all",
     targetIds    = [] as string[],
     targetLabel,
+    templateKey  = "promoBlast",
+    sendNow      = true,
+    saveOnly     = false,
   } = req.body;
 
-  // ── Validation ──────────────────────────────────────────────────────────────
-  if (!name || !String(name).trim())
-    throw new AppError("Campaign name is required", 400);
-  if (!message || !String(message).trim())
-    throw new AppError("WhatsApp message is required", 400);
-  if (String(message).trim().length > 1024)
-    throw new AppError("Message must be ≤ 1024 characters", 400);
+  // ── Load template metadata if available ─────────────────────────────────────
+  let defaultTitle = "WhatsApp Broadcast";
+  let templateBody = "";
+  if (templateKey) {
+    const tplDoc = await WhatsAppTemplate.findOne({ eventKey: templateKey }).lean();
+    if (tplDoc) {
+      defaultTitle = tplDoc.title;
+      templateBody = tplDoc.bodyFormat;
+    }
+  }
+
+  // ── Defaults & Normalization ───────────────────────────────────────────────
+  const campaignName =
+    (name && String(name).trim()) ||
+    `${defaultTitle} - ${new Date().toLocaleDateString("en-IN")}`;
+  const promoMessage =
+    (message && String(message).trim()) ||
+    templateBody ||
+    "Special store offers and discounts at Kidroo Toys!";
 
   // ── Resolve recipients ───────────────────────────────────────────────────────
   const recipients = await resolveTargetCustomers(
@@ -214,11 +227,54 @@ export const createAndSendCampaign = asyncHandler(async (req: Request, res: Resp
     );
   }
 
-  // ── Send WhatsApp broadcast via MSG91 ────────────────────────────────────────
-  const { sent, delivered, failed } = await sendWhatsAppBroadcast(
+  // ── Save as Draft (If admin chose to save without sending directly) ─────────
+  const shouldSendDirect = sendNow === true && !saveOnly && req.body.status !== "draft";
+
+  if (!shouldSendDirect) {
+    const label =
+      (targetLabel as string) ||
+      (targetGroup === "custom"
+        ? `${recipients.length} Selected Customers`
+        : GROUP_LABELS[String(targetGroup)] ?? "All Customers");
+
+    const campaign = await SmsCampaign.create({
+      name:        campaignName,
+      message:     promoMessage,
+      channel:     "whatsapp",
+      templateKey: String(templateKey),
+      targetGroup,
+      targetLabel: label,
+      targetIds:
+        targetGroup === "custom"
+          ? (targetIds as string[]).map((id) => new mongoose.Types.ObjectId(id))
+          : [],
+      recipients: recipients.map((r) => ({
+        mobile: r.mobile,
+        name: r.name,
+        status: "draft" as const,
+        errorReason: "",
+      })),
+      status:         "draft",
+      sentCount:      0,
+      deliveredCount: 0,
+      failedCount:    0,
+    });
+
+    return sendSuccessResponse(
+      res,
+      201,
+      `Campaign "${campaignName}" saved as draft (${recipients.length} recipients queued)`,
+      campaign
+    );
+  }
+
+  // ── Send WhatsApp broadcast directly via Meta Cloud API ────────────────────
+  const { sent, failed, results } = await sendWhatsAppBroadcast(
     recipients,
-    String(message).trim()
+    promoMessage,
+    String(templateKey)
   );
+  const delivered = sent;
 
   // ── Resolve label ────────────────────────────────────────────────────────────
   const label =
@@ -227,17 +283,25 @@ export const createAndSendCampaign = asyncHandler(async (req: Request, res: Resp
       ? `${sent} Selected Customers`
       : GROUP_LABELS[String(targetGroup)] ?? "All Customers");
 
-  // ── Persist campaign record ──────────────────────────────────────────────────
+  // ── Persist campaign record with per-recipient delivery statuses ────────────
   const campaign = await SmsCampaign.create({
-    name:       String(name).trim(),
-    message:    String(message).trim(),
-    channel:    "whatsapp",
+    name:        campaignName,
+    message:     promoMessage,
+    channel:     "whatsapp",
+    templateKey: String(templateKey),
     targetGroup,
     targetLabel: label,
     targetIds:
       targetGroup === "custom"
         ? (targetIds as string[]).map((id) => new mongoose.Types.ObjectId(id))
         : [],
+    recipients: results.map((r) => ({
+      mobile: r.mobile,
+      name: r.name,
+      status: r.status,
+      errorReason: r.errorReason || "",
+      deliveredAt: r.status === "delivered" ? new Date() : undefined,
+    })),
     status:        "sent",
     sentCount:     sent,
     deliveredCount: delivered,
@@ -249,6 +313,252 @@ export const createAndSendCampaign = asyncHandler(async (req: Request, res: Resp
     res,
     201,
     `WhatsApp broadcast sent to ${sent} customers (${delivered} delivered, ${failed} failed)`,
+    campaign
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/admin/sms-campaigns/:id
+// Returns campaign details with structured delivery report & recipient breakdown
+// ─────────────────────────────────────────────────────────────────────────────
+export const getCampaignById = asyncHandler(async (req: Request, res: Response) => {
+  const id = String(req.params.id);
+  if (!mongoose.Types.ObjectId.isValid(id)) throw new AppError("Invalid ID", 400);
+
+  const campaign = await SmsCampaign.findById(new mongoose.Types.ObjectId(id)).lean();
+  if (!campaign) throw new AppError("Campaign not found", 404);
+
+  let recipientsList = campaign.recipients || [];
+
+  // If older campaign has no recipient subdocuments stored, reconstruct from targetGroup
+  if (recipientsList.length === 0) {
+    const resolved = await resolveTargetCustomers(
+      campaign.targetGroup,
+      campaign.targetIds?.map((tId: any) => tId.toString()) || []
+    );
+    const isSent = campaign.status === "sent";
+    recipientsList = resolved.map((r) => ({
+      mobile: r.mobile,
+      name: r.name,
+      status: campaign.deliveredCount > 0 ? ("delivered" as const) : (isSent ? ("failed" as const) : ("sent" as const)),
+      errorReason:
+        campaign.failedCount > 0
+          ? "Meta WhatsApp Cloud API Sandbox limitation: Phone number is not in the allowed test recipient list (#131030)"
+          : "",
+      deliveredAt: campaign.deliveredCount > 0 ? campaign.sentAt : undefined,
+    }));
+  }
+
+  // Load template details if templateKey exists
+  let templateInfo: any = null;
+  if (campaign.templateKey) {
+    const tpl = await WhatsAppTemplate.findOne({ eventKey: campaign.templateKey }).lean();
+    if (tpl) {
+      templateInfo = {
+        title: tpl.title,
+        metaTemplateName: tpl.metaTemplateName,
+        icon: tpl.icon,
+        triggerEvent: tpl.triggerEvent,
+        headerText: tpl.headerText,
+        bodyFormat: tpl.bodyFormat,
+        buttonLabel: tpl.buttonLabel,
+      };
+    }
+  }
+
+  const isCampaignDraft = campaign.status === "draft";
+
+  // Calculate clean metrics
+  const totalTargeted = recipientsList.length || campaign.sentCount || 0;
+  const delivered = isCampaignDraft
+    ? 0
+    : (campaign.deliveredCount ?? recipientsList.filter((r: any) => r.status === "delivered").length);
+  const failed = isCampaignDraft
+    ? 0
+    : (campaign.failedCount ?? recipientsList.filter((r: any) => r.status === "failed").length);
+  const queued = isCampaignDraft
+    ? totalTargeted
+    : recipientsList.filter((r: any) => r.status === "sent" || r.status === "draft").length;
+  const deliveryRate = totalTargeted > 0 ? Number(((delivered / totalTargeted) * 100).toFixed(1)) : 0;
+  const failureRate = totalTargeted > 0 ? Number(((failed / totalTargeted) * 100).toFixed(1)) : 0;
+
+  // Build structured error breakdown
+  const errorMap = new Map<string, { reason: string; count: number; code: string }>();
+  if (!isCampaignDraft) {
+    for (const r of recipientsList) {
+      if (r.status === "failed" && r.errorReason) {
+        const isSandboxError =
+          r.errorReason.includes("131030") ||
+          r.errorReason.toLowerCase().includes("not in allowed list") ||
+          r.errorReason.toLowerCase().includes("sandbox");
+        const code = isSandboxError ? "131030" : "API_ERR";
+        const key = isSandboxError ? "Meta Sandbox Test Number Restriction (#131030)" : r.errorReason;
+        const current = errorMap.get(key) || {
+          reason: isSandboxError
+            ? "Meta Sandbox Restriction: Recipient number not added to Meta App allowed list (#131030)"
+            : r.errorReason,
+          count: 0,
+          code,
+        };
+        current.count += 1;
+        errorMap.set(key, current);
+      }
+    }
+  }
+
+  // Fetch matching customers to enrich with customerId, avatar, and full name
+  const rawMobiles = recipientsList
+    .map((r: any) => String(r.mobile || "").trim())
+    .filter(Boolean);
+  const searchVariants: string[] = [];
+  rawMobiles.forEach((m: string) => {
+    searchVariants.push(m);
+    if (m.startsWith("+91")) searchVariants.push(m.slice(3));
+    else if (m.length === 10) searchVariants.push(`+91${m}`);
+  });
+
+  const matchedCustomers = await Customer.find(
+    { mobile: { $in: searchVariants } },
+    { _id: 1, mobile: 1, firstName: 1, lastName: 1, avatar: 1 }
+  ).lean();
+
+  const customerByMobile = new Map<string, any>();
+  for (const c of matchedCustomers) {
+    if (c.mobile) {
+      const clean = String(c.mobile).trim();
+      customerByMobile.set(clean, c);
+      if (clean.startsWith("+91")) customerByMobile.set(clean.slice(3), c);
+      else if (clean.length === 10) customerByMobile.set(`+91${clean}`, c);
+    }
+  }
+
+  // Clean recipients with formatted phone & helper flags
+  const formattedRecipients = recipientsList.map((r: any) => {
+    const cleanMobile = String(r.mobile || "").trim();
+    let formattedMobile = cleanMobile;
+    if (cleanMobile.startsWith("+91") && cleanMobile.length === 13) {
+      formattedMobile = `+91 ${cleanMobile.slice(3, 8)} ${cleanMobile.slice(8)}`;
+    } else if (cleanMobile.length === 10) {
+      formattedMobile = `+91 ${cleanMobile.slice(0, 5)} ${cleanMobile.slice(5)}`;
+    }
+
+    const recipientStatus = isCampaignDraft ? "draft" : (r.status || "sent");
+
+    const isSandboxError =
+      !isCampaignDraft &&
+      ((r.errorReason || "").includes("131030") ||
+      (r.errorReason || "").toLowerCase().includes("not in allowed list") ||
+      (r.errorReason || "").toLowerCase().includes("sandbox"));
+
+    let simpleReason = "Delivered successfully";
+    if (isCampaignDraft) {
+      simpleReason = "Draft — Ready to send";
+    } else if (recipientStatus === "failed") {
+      if (isSandboxError) {
+        simpleReason = "Test Mode: Number not added in WhatsApp test list";
+      } else if ((r.errorReason || "").toLowerCase().includes("invalid")) {
+        simpleReason = "Invalid phone number";
+      } else {
+        simpleReason = r.errorReason || "Message delivery failed";
+      }
+    } else if (recipientStatus === "sent" || recipientStatus === "draft") {
+      simpleReason = isCampaignDraft ? "Draft — Ready to send" : "Queued to send";
+    }
+
+    const cust = customerByMobile.get(cleanMobile);
+
+    return {
+      _id: r._id,
+      customerId: cust?._id ? cust._id.toString() : (r.customerId ? String(r.customerId) : null),
+      name: cust ? `${cust.firstName || ""} ${cust.lastName || ""}`.trim() : (r.name || "Customer"),
+      avatar: cust?.avatar || null,
+      mobile: cleanMobile,
+      formattedMobile,
+      status: recipientStatus,
+      simpleReason,
+      errorReason: isCampaignDraft ? "" : (r.errorReason || ""),
+      errorCode: isSandboxError ? "131030" : (r.errorReason ? "ERR" : null),
+      isSandboxError,
+      deliveredAt: r.deliveredAt || null,
+    };
+  });
+
+  const responsePayload = {
+    ...campaign,
+    template: templateInfo,
+    campaign: {
+      _id: campaign._id,
+      name: campaign.name,
+      message: campaign.message,
+      channel: campaign.channel || "whatsapp",
+      templateKey: campaign.templateKey,
+      template: templateInfo,
+      targetGroup: campaign.targetGroup,
+      targetLabel: campaign.targetLabel,
+      status: campaign.status,
+      sentAt: campaign.sentAt,
+      createdAt: campaign.createdAt,
+    },
+    metrics: {
+      totalTargeted,
+      delivered,
+      failed,
+      queued,
+      deliveryRate,
+      failureRate,
+    },
+    errorBreakdown: Array.from(errorMap.values()),
+    recipients: formattedRecipients,
+  };
+
+  return sendSuccessResponse(res, 200, "Campaign delivery report fetched", responsePayload);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/admin/sms-campaigns/:id/send
+// Sends a previously saved draft campaign
+// ─────────────────────────────────────────────────────────────────────────────
+export const sendExistingDraftCampaign = asyncHandler(async (req: Request, res: Response) => {
+  const id = String(req.params.id);
+  if (!mongoose.Types.ObjectId.isValid(id)) throw new AppError("Invalid ID", 400);
+
+  const campaign = await SmsCampaign.findById(new mongoose.Types.ObjectId(id));
+  if (!campaign) throw new AppError("Campaign not found", 404);
+
+  // Resolve recipients
+  const recipients = await resolveTargetCustomers(
+    campaign.targetGroup,
+    campaign.targetIds?.map((tId) => tId.toString()) || []
+  );
+
+  if (recipients.length === 0) {
+    throw new AppError("No active customers with a mobile number found for this campaign", 400);
+  }
+
+  const { sent, failed, results } = await sendWhatsAppBroadcast(
+    recipients,
+    campaign.message,
+    campaign.templateKey || "promoBlast"
+  );
+
+  campaign.status = "sent";
+  campaign.sentCount = sent;
+  campaign.deliveredCount = sent;
+  campaign.failedCount = failed;
+  campaign.sentAt = new Date();
+  campaign.recipients = results.map((r) => ({
+    mobile: r.mobile,
+    name: r.name,
+    status: r.status,
+    errorReason: r.errorReason || "",
+    deliveredAt: r.status === "delivered" ? new Date() : undefined,
+  })) as any;
+  await campaign.save();
+
+  return sendSuccessResponse(
+    res,
+    200,
+    `WhatsApp broadcast sent to ${sent} customers (${sent} delivered, ${failed} failed)`,
     campaign
   );
 });

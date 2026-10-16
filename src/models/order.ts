@@ -62,9 +62,30 @@ export interface IOrder extends Document {
   shiprocketLabelUrl?: string;
   shiprocketInvoiceUrl?: string;
   shiprocketManifestUrl?: string;
-  
+  // WhatsApp Notification metadata
+  whatsappNotification?: IOrderWhatsAppNotification;
+
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface IWhatsAppHistoryItem {
+  eventType: string;
+  templateName?: string;
+  recipientPhone: string;
+  status: "Sent" | "Failed";
+  messageId?: string;
+  errorReason?: string;
+  sentAt: Date;
+}
+
+export interface IOrderWhatsAppNotification {
+  sent: boolean;
+  status: "Sent" | "Failed" | "Not Sent";
+  lastSentAt?: Date;
+  lastTemplate?: string;
+  lastError?: string;
+  history: IWhatsAppHistoryItem[];
 }
 
 const orderItemSchema = new Schema<IOrderItem>({
@@ -93,6 +114,31 @@ const shippingAddressSchema = new Schema<IShippingAddress>({
   zipCode: { type: String, required: true },
   country: { type: String, default: "India" },
 });
+
+const orderWhatsAppHistorySchema = new Schema(
+  {
+    eventType: { type: String, required: true },
+    templateName: { type: String },
+    recipientPhone: { type: String, required: true },
+    status: { type: String, enum: ["Sent", "Failed"], required: true },
+    messageId: { type: String },
+    errorReason: { type: String },
+    sentAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
+const orderWhatsAppSchema = new Schema(
+  {
+    sent: { type: Boolean, default: false },
+    status: { type: String, enum: ["Sent", "Failed", "Not Sent"], default: "Not Sent" },
+    lastSentAt: { type: Date },
+    lastTemplate: { type: String },
+    lastError: { type: String },
+    history: { type: [orderWhatsAppHistorySchema], default: [] },
+  },
+  { _id: false }
+);
 
 const orderSchema = new Schema<IOrder>(
   {
@@ -126,6 +172,14 @@ const orderSchema = new Schema<IOrder>(
     shiprocketLabelUrl: { type: String },
     shiprocketInvoiceUrl: { type: String },
     shiprocketManifestUrl: { type: String },
+    whatsappNotification: {
+      type: orderWhatsAppSchema,
+      default: () => ({
+        sent: false,
+        status: "Not Sent",
+        history: [],
+      }),
+    },
   },
   { timestamps: true }
 );

@@ -7,13 +7,61 @@ import Customer from "../models/customer";
 import { inventoryService } from "../services/inventoryService";
 import { couponService } from "../services/couponService";
 import { shiprocketService } from "../services/shiprocketService";
-import { sendWhatsAppOrderConfirmed, sendWhatsAppOrderStatus } from "../services/msg91WhatsappService";
+import {
+  sendWhatsAppOrderConfirmed,
+  sendWhatsAppOrderStatus,
+  IWhatsAppNotificationResult,
+} from "../services/metaWhatsappService";
 import { sendMsg91OrderConfirmedEmail } from "../utils/msg91Email";
 import { getRazorpayInstance } from "../config/razorpay";
 import { asyncHandler } from "../utils/asyncHandler";
 import { sendSuccessResponse } from "../utils/apiResponse";
 import AppError from "../utils/appError";
 import { triggerRealtimeBackup } from "../utils/realtimeBackup";
+
+/**
+ * Helper to record WhatsApp delivery status and event history on an Order document
+ */
+async function recordOrderWhatsApp(
+  order: any,
+  eventType: string,
+  recipientPhone: string,
+  result: IWhatsAppNotificationResult
+) {
+  try {
+    if (!order.whatsappNotification) {
+      order.whatsappNotification = {
+        sent: false,
+        status: "Not Sent",
+        history: [],
+      };
+    }
+
+    order.whatsappNotification.sent = result.ok;
+    order.whatsappNotification.status = result.ok ? "Sent" : "Failed";
+    order.whatsappNotification.lastSentAt = new Date();
+    order.whatsappNotification.lastTemplate = result.templateName;
+    order.whatsappNotification.lastError = result.ok ? undefined : result.errorReason;
+
+    if (!Array.isArray(order.whatsappNotification.history)) {
+      order.whatsappNotification.history = [];
+    }
+
+    order.whatsappNotification.history.unshift({
+      eventType,
+      templateName: result.templateName,
+      recipientPhone,
+      status: result.ok ? "Sent" : "Failed",
+      messageId: result.messageId,
+      errorReason: result.errorReason,
+      sentAt: new Date(),
+    });
+
+    await order.save();
+  } catch (err) {
+    console.error("[WhatsApp] Failed to record WhatsApp status on order:", err);
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════
 // CUSTOMER CONTROLLERS
@@ -231,12 +279,18 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
     try {
       const customerDoc = await Customer.findById(customerId);
       if (customerDoc) {
-        sendWhatsAppOrderConfirmed(
+        const waRes = await sendWhatsAppOrderConfirmed(
           `${customerDoc.firstName} ${customerDoc.lastName}`,
           customerDoc.mobile,
           orderId,
           netAmount,
           "cod"
+        );
+        await recordOrderWhatsApp(
+          order,
+          "Order Confirmation (COD)",
+          customerDoc.mobile,
+          waRes
         );
         if (customerDoc.email) {
           sendMsg91OrderConfirmedEmail(
@@ -306,12 +360,18 @@ export const verifyPayment = asyncHandler(async (req: Request, res: Response) =>
   try {
     const customerDoc = await Customer.findById(order.customer);
     if (customerDoc) {
-      sendWhatsAppOrderConfirmed(
+      const waRes = await sendWhatsAppOrderConfirmed(
         `${customerDoc.firstName} ${customerDoc.lastName}`,
         customerDoc.mobile,
         order.orderId,
         order.netAmount,
         "online"
+      );
+      await recordOrderWhatsApp(
+        order,
+        "Order Confirmation (Online Payment)",
+        customerDoc.mobile,
+        waRes
       );
       if (customerDoc.email) {
         sendMsg91OrderConfirmedEmail(
@@ -459,11 +519,17 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
   try {
     const customerDoc = await Customer.findById(order.customer);
     if (customerDoc && status) {
-      sendWhatsAppOrderStatus(
+      const waRes = await sendWhatsAppOrderStatus(
         `${customerDoc.firstName} ${customerDoc.lastName}`,
         customerDoc.mobile,
         order.orderId,
         status
+      );
+      await recordOrderWhatsApp(
+        order,
+        `Status Update (${status})`,
+        customerDoc.mobile,
+        waRes
       );
     }
   } catch (whatsappErr) {
@@ -607,15 +673,86 @@ export const adminConfirmOrder = asyncHandler(async (req: Request, res: Response
 
   // 5. Send confirmation notifications via WhatsApp
   try {
-    sendWhatsAppOrderStatus(
+    const waRes = await sendWhatsAppOrderStatus(
       `${customerDoc.firstName} ${customerDoc.lastName}`,
       customerDoc.mobile,
       order.orderId,
       "Confirmed"
+    );
+    await recordOrderWhatsApp(
+      order,
+      "Order Booking Confirmed",
+      customerDoc.mobile,
+      waRes
     );
   } catch (whatsappErr) {
     console.error("[WhatsApp] Error sending order confirm notification:", whatsappErr);
   }
 
   return sendSuccessResponse(res, 200, "Order confirmed and shipped via Shiprocket successfully", order);
+});
+
+/**
+ * Manually send or resend WhatsApp notification for an order
+ * POST /api/orders/:id/send-whatsapp
+ */
+export const sendOrderWhatsAppNotification = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { type = "orderStatus" } = req.body; // "orderConfirmed" or "orderStatus"
+
+  const order = await Order.findById(id).populate("customer", "firstName lastName email mobile");
+  if (!order) {
+    throw new AppError("Order not found", 404);
+  }
+
+  const customerDoc = order.customer as any;
+  const recipientPhone = customerDoc?.mobile || order.shippingAddress?.phone;
+  const recipientName = customerDoc
+    ? `${customerDoc.firstName} ${customerDoc.lastName}`
+    : order.shippingAddress?.fullName || "Customer";
+
+  if (!recipientPhone) {
+    throw new AppError("No recipient phone number found for this order", 400);
+  }
+
+  let waResult: IWhatsAppNotificationResult;
+  let eventType: string;
+
+  if (type === "orderConfirmed") {
+    eventType = `Manual Order Confirmation (${order.paymentMethod === "cod" ? "COD" : "Online"})`;
+    waResult = await sendWhatsAppOrderConfirmed(
+      recipientName,
+      recipientPhone,
+      order.orderId,
+      order.netAmount,
+      order.paymentMethod
+    );
+  } else {
+    eventType = `Manual Status Update (${order.status})`;
+    waResult = await sendWhatsAppOrderStatus(
+      recipientName,
+      recipientPhone,
+      order.orderId,
+      order.status
+    );
+  }
+
+  await recordOrderWhatsApp(order, eventType, recipientPhone, waResult);
+
+  // Re-fetch populated order to return latest state
+  const updatedOrder = await Order.findById(id)
+    .populate("customer", "firstName lastName email mobile")
+    .populate("items.productId", "productName slug image");
+
+  return sendSuccessResponse(
+    res,
+    200,
+    waResult.ok
+      ? "WhatsApp notification dispatched successfully"
+      : `WhatsApp dispatch failed: ${waResult.errorReason || "Unknown error"}`,
+    {
+      order: updatedOrder,
+      result: waResult,
+    }
+  );
 });

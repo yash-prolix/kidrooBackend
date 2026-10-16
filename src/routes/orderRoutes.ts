@@ -9,6 +9,7 @@ import {
   getAdminOrderById,
   updateOrderStatus,
   adminConfirmOrder,
+  sendOrderWhatsAppNotification,
 } from "../controller/orderController";
 import { getAdminDashboardAnalytics } from "../controller/analyticsController";
 import { customerAuthMiddleware } from "../middlewares/customerAuthMiddleware";
@@ -35,5 +36,6 @@ adminRouter.get("/", getAllOrders);
 adminRouter.get("/:id", getAdminOrderById);
 adminRouter.post("/:id/confirm", adminConfirmOrder);
 adminRouter.patch("/:id/status", updateOrderStatus);
+adminRouter.post("/:id/send-whatsapp", sendOrderWhatsAppNotification);
 
 export { customerRouter as customerOrderRouter, adminRouter as adminOrderRouter };

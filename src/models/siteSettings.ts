@@ -22,6 +22,13 @@ export interface ISiteSettings {
   };
   freeShippingThreshold: number;
   freeShippingEnabled: boolean;
+  whatsappConfig: {
+    enabled: boolean;              // Master ON/OFF toggle for all WhatsApp notifications
+    sendOrderConfirmed: boolean;   // Toggle: send when order is placed/confirmed
+    sendOrderStatus: boolean;      // Toggle: send on order status updates
+    sendPromoBroadcast: boolean;   // Toggle: send promo broadcasts
+    languageCode: string;          // Default language code (e.g. "en")
+  };
 }
 
 const siteSettingsSchema = new mongoose.Schema<ISiteSettings>(
@@ -101,6 +108,31 @@ const siteSettingsSchema = new mongoose.Schema<ISiteSettings>(
     freeShippingEnabled: {
       type: Boolean,
       default: false,
+    },
+    whatsappConfig: {
+      // Master toggle — when false, NO WhatsApp messages are sent at all
+      enabled: {
+        type: Boolean,
+        default: true,
+      },
+      // Individual event toggles
+      sendOrderConfirmed: {
+        type: Boolean,
+        default: true,
+      },
+      sendOrderStatus: {
+        type: Boolean,
+        default: true,
+      },
+      sendPromoBroadcast: {
+        type: Boolean,
+        default: true,
+      },
+      // Default language for messages (individual templates can override this)
+      languageCode: {
+        type: String,
+        default: "en",
+      },
     },
   },
   { timestamps: true },

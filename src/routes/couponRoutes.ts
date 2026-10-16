@@ -7,6 +7,7 @@ import {
   updateCoupon,
   deleteCoupon,
   validateCoupon,
+  sendOfferWhatsAppNotification,
 } from "../controller/couponController";
 import { getOfferAndCouponAnalytics } from "../controller/analyticsController";
 import {
@@ -242,6 +243,31 @@ router.delete(
   authorizationMiddleware(["admin", "moderator"]),
   checkPermission("/offers"),
   deleteCoupon
+);
+
+/**
+ * @swagger
+ * /api/coupons/{id}/send-whatsapp:
+ *   post:
+ *     summary: Send offer WhatsApp notification to all or selected customers (Admin)
+ *     tags:
+ *       - Coupons
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: WhatsApp offer broadcast triggered
+ */
+router.post(
+  "/:id/send-whatsapp",
+  authMiddleware,
+  authorizationMiddleware(["admin", "moderator"]),
+  checkPermission("/offers"),
+  sendOfferWhatsAppNotification
 );
 
 export default router;

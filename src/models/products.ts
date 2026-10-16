@@ -40,6 +40,8 @@ export interface IProduct {
   seoTitle?: string;
   seoDescription?: string;
   specifications?: { key: string; value: string }[];
+  hasVariants?: boolean;
+  variants?: mongoose.Schema.Types.ObjectId[];
   createdAt?: Date;
   updatedAt?: Date;
 }

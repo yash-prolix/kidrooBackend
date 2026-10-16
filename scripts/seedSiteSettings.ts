@@ -35,6 +35,13 @@ const seedSiteSettings = async (): Promise<void> => {
       },
       freeShippingThreshold: 1000,
       freeShippingEnabled: false,
+      whatsappConfig: {
+        enabled: true,
+        sendOrderConfirmed: true,
+        sendOrderStatus: true,
+        sendPromoBroadcast: true,
+        languageCode: "en",
+      },
     };
 
     // Check if site settings already exist
